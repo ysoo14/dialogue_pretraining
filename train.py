@@ -82,7 +82,6 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, device, optimiz
 
         log_prob = model(u, umask) # seq_len, batch, n_classes
 
-        print(log_prob.shape)
         # lp_ = log_prob.transpose(0,1).contiguous().view(-1,log_prob.size()[2]) # batch*seq_len, n_classes
         # labels_ = label.view(-1) # batch*seq_len
 
@@ -121,7 +120,7 @@ if __name__ == '__main__' :
                         help='learning rate')
     parser.add_argument('--l2', type=float, default=0.00001, metavar='L2',
                         help='L2 regularization weight')
-    parser.add_argument('--batch-size', type=int, default=32, metavar='BS',
+    parser.add_argument('--batch-size', type=int, default=16, metavar='BS',
                         help='batch size')
     parser.add_argument('--epochs', type=int, default=60, metavar='E',
                         help='number of epochs')
@@ -147,19 +146,21 @@ if __name__ == '__main__' :
     dropout=0.3
     n_heads=8
     intermediate_dim=hidden_dim*4
-    n_class=8
+    n_class=9
 
     if args.task == 'MNS':
         model = Model_MNS(hidden_dim=hidden_dim, n_layer=n_layer, 
                           dropout=dropout, n_heads=n_heads, 
                           intermediate_dim=intermediate_dim, 
-                          n_class=n_class) #hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class
+                          n_class=n_class,
+                          device=device) #hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class
 
     else:
         model = Model_MNS(hidden_dim=hidden_dim, n_layer=n_layer, 
                           dropout=dropout, n_heads=n_heads, 
                           intermediate_dim=intermediate_dim, 
-                          n_class=n_class) #hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class
+                          n_class=n_class,
+                          device=device) #hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class
 
     model = model.to(device)
     if args.multigpu:
@@ -167,7 +168,7 @@ if __name__ == '__main__' :
 
     path = r'./dataset/data.pkl'
 
-    train_dataloader, valid_dataloader, test_dataloader = get_data_loader(path, args.multigpu, batch_size=32, num_workers=0, pin_memory=False)
+    train_dataloader, valid_dataloader, test_dataloader = get_data_loader(path, args.multigpu, batch_size=args.batch_size, num_workers=0, pin_memory=False)
 
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr,
@@ -175,19 +176,21 @@ if __name__ == '__main__' :
     
     loss_function = torch.nn.NLLLoss()
 
-    for e in range(n_epochs):
+    best_loss, best_label, best_pred, best_mask = None, None, None, None
+
+    for e in tqdm(range(n_epochs)):
         start_time = time.time()
-        train_loss, train_acc, _,_,_,train_fscore, _= train_or_eval_model(model, loss_function,
+        train_loss, train_acc, _,_,train_fscore, _= train_or_eval_model(model, loss_function,
                                                train_dataloader, e, device, optimizer, True)
-        valid_loss, valid_acc, _,_,_,val_fscore, _= train_or_eval_model(model, loss_function, valid_dataloader, e, device)
-        test_loss, test_acc, test_label, test_pred, test_mask, test_fscore, epoch= train_or_eval_model(model, loss_function, test_dataloader, e, device)
+        valid_loss, valid_acc, _,_,val_fscore, _= train_or_eval_model(model, loss_function, valid_dataloader, e, device)
+        test_loss, test_acc, test_label, test_pred, test_fscore, epoch= train_or_eval_model(model, loss_function, test_dataloader, e, device)
 
         if best_loss == None or best_loss > test_loss:
-            best_loss, best_label, best_pred, best_mask =\
-                    test_loss, test_label, test_pred, test_mask
+            best_loss, best_label, best_pred =\
+                    test_loss, test_label, test_pred
 
             #path = './weights/' + args.task + '/model_' + str(epoch) + '.pt'
-            path = './weights/' + args.task + '/model.pt'
+            path = './weights/' + args.task + '_model.pt'
             torch.save(model.state_dict(), path)
 
         print('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
