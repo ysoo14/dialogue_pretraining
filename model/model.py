@@ -13,19 +13,37 @@ class DialogueEncoder(nn.Module):
         return self.bert(inputs_embeds=input_embeds, encoder_attention_mask=umask)
 
 class Model_MNS(nn.Module): #matching the number of speakers
-    def __init__(self, hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class):
+    def __init__(self, hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class, device):
         super(Model_MNS, self).__init__()
         self.bert_config = BertConfig(hidden_size=hidden_dim,
                                       num_hidden_layers=n_layer,
                                       num_attention_heads=n_heads,
                                       hidden_dropout_prob=dropout,
                                       intermediate_size=intermediate_dim)
+        self.cls_token = torch.LongTensor([0]).to(device)
+        self.sep_token = torch.LongTensor([1]).to(device)
+        self.token_embedding = nn.Embedding(2, hidden_dim)
         self.dialogue_encoder = DialogueEncoder(bert_config=self.bert_config)
         self.classifier=nn.Linear(hidden_dim, n_class)
         self.activation = nn.ReLU()
         self.log_softmax = torch.nn.LogSoftmax(dim=1)
+        self.device = device
+        
+    def add_token(self, utterances):
+        batch_size = utterances.shape[1]
+        cls_t = self.token_embedding(self.cls_token)
+        cls_t = cls_t.repeat(1, batch_size, 1)
+        sep_t = self.token_embedding(self.sep_token)
+        sep_t = sep_t.repeat(1, batch_size, 1)
 
-    def forward(self, utterances, umask):
+        result = torch.cat((cls_t, utterances, sep_t), dim=0)
+
+        result = result.to(self.device)
+
+        return result
+
+    def forward(self, utterances, umask): #utterance (seq_len, batch_size, dim)
+        utterances = self.add_token(utterances)
         utterances = utterances.permute(1,0,2)
         outputs = self.dialogue_encoder(input_embeds=utterances, umask=umask)
 

@@ -26,7 +26,7 @@ class Dataset(Dataset):
         return utterances,\
                torch.FloatTensor(self.speakers[index]),\
                torch.LongTensor(num_speaker),\
-               torch.FloatTensor([1]*self.num_utterances[index]),\
+               torch.FloatTensor([1]*(self.num_utterances[index]+2)),\
                self.num_utterances[index],\
                index        
 
