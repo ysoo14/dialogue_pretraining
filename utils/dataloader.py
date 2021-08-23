@@ -5,7 +5,7 @@ from torch.nn.utils.rnn import pad_sequence
 import pickle
 import pandas as pd
 
-class Dataset(Dataset):
+class Dataset_MNS(Dataset):
     def __init__(self, path):
         self.dataset= pickle.load(open(path, 'rb'), encoding='latin1') 
 
@@ -37,3 +37,32 @@ class Dataset(Dataset):
         dat = pd.DataFrame(data)
 
         return [pad_sequence(dat[i]) if i<4 else dat[i] for i in dat]
+
+class Dataset_SCP(Dataset):
+    def __init__(self, path):
+        self.dataset= pickle.load(open(path, 'rb'), encoding='latin1') 
+
+        self.contexts = self.dataset['contexts']
+        self.utterance1 = self.dataset['utt1s']
+        self.utterance2 = self.dataset['utt2s']
+        self.labels = self.dataset['labels']
+        
+        self.len = len(self.contexts)
+
+    def __getitem__(self, index):
+        label = [] 
+        label.append(self.labels[index])
+        return torch.FloatTensor(self.contexts[index]),\
+               torch.FloatTensor(self.utterance1[index]),\
+               torch.FloatTensor(self.utterance2[index]),\
+               torch.FloatTensor([1]*(len(self.contexts[index])+6)),\
+               torch.FloatTensor(label),\
+               index        
+
+    def __len__(self):
+        return self.len
+    
+    def collate_fn(self, data):
+        dat = pd.DataFrame(data)
+
+        return [pad_sequence(dat[i]) if i<5 else dat[i] for i in dat]
