@@ -1,25 +1,30 @@
 import argparse
 import numpy as np, pickle, time, argparse
-import pickle
+import pickle5 as pickle
 import time
 
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
 
 from model.model import Model_MNS, Model_SCP
 from sklearn.metrics import f1_score, confusion_matrix, accuracy_score, classification_report, precision_recall_fscore_support
+
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data import random_split
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import RandomSampler
+
 from tqdm import tqdm
 from utils.dataloader import Dataset_SCP, Dataset_MNS
 
 np.random.seed(1234)
 
-def get_data_loader(path, task, multigpu, batch_size=16, num_workers=0, pin_memory=False):
-    if task == 'MNS':
+def get_data_loader(path, args, batch_size=16, num_workers=0, pin_memory=False):
+    if args.task == 'MNS':
         dataset = Dataset_MNS(path)
     else:
         dataset = Dataset_SCP(path)
@@ -30,12 +35,13 @@ def get_data_loader(path, task, multigpu, batch_size=16, num_workers=0, pin_memo
     valid_len = int(n_dataset * 0.1)
     test_len = n_dataset - train_len - valid_len
     train_dataset, valid_dataset, test_dataset = random_split(dataset, [train_len, valid_len, test_len])
-    n_gpu = torch.cuda.device_count()
+    
+    multigpu = args.multigpu
 
     if multigpu:
-        train_sampler = DistributedSampler(train_dataset)
-        valid_sampler = DistributedSampler(valid_dataset)
-        test_sampler = DistributedSampler(test_dataset)
+        train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=args.gpu)
+        valid_sampler = DistributedSampler(valid_dataset, num_replicas=args.world_size, rank=args.gpu)
+        test_sampler = DistributedSampler(test_dataset, num_replicas=args.world_size, rank=args.gpu)
     else:
         train_sampler = RandomSampler(train_dataset)
         valid_sampler = RandomSampler(valid_dataset)
@@ -48,7 +54,6 @@ def get_data_loader(path, task, multigpu, batch_size=16, num_workers=0, pin_memo
                                   collate_fn=dataset.collate_fn,
                                   num_workers=num_workers,
                                   pin_memory=pin_memory)
-
     valid_dataloader = DataLoader(dataset=valid_dataset, 
                                   batch_size=batch_size, 
                                   shuffle=False, 
@@ -153,31 +158,9 @@ def train_or_eval_model2(model, loss_function, dataloader, epoch, device, optimi
     avg_fscore = round(f1_score(labels,preds,average='weighted')*100,2)
     return avg_loss, avg_accuracy, labels, preds, avg_fscore, epoch 
 
-if __name__ == '__main__' :
-    
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('--task', default='SCP', metavar='TASK',
-                        help='training_object')
-    parser.add_argument('--multigpu', default=False, metavar='multi-gpu',
-                        help='multi-gpu')
-    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR',
-                        help='learning rate')
-    parser.add_argument('--l2', type=float, default=0.00001, metavar='L2',
-                        help='L2 regularization weight')
-    parser.add_argument('--batch-size', type=int, default=16, metavar='BS',
-                        help='batch size')
-    parser.add_argument('--epochs', type=int, default=60, metavar='E',
-                        help='number of epochs')
-    parser.add_argument('--class-weight', action='store_true', default=True,
-                        help='class weight')
-
-    args = parser.parse_args()
-
-    print(args) 
-
+def main(args):
+    args.node = 1
     args.cuda = torch.cuda.is_available()
-    n_epochs   = args.epochs
 
     if args.cuda:
         print('Running on GPU')
@@ -186,12 +169,35 @@ if __name__ == '__main__' :
         print('Running on CPU')
         device = torch.device("cpu")
 
+    ngpus_per_node = torch.cuda.device_count()
+    args.world_size = ngpus_per_node * args.node
+    mp.spawn(main_worker, nprocs=ngpus_per_node, 
+             args=(ngpus_per_node, args, device))
+    
+    
+def main_worker(gpu, ngpus_per_node, args, device):
+    args.gpu = gpu
+    args.rank = gpu
+    torch.cuda.set_device(args.gpu)
+    
+    print("Use GPU: {} for training".format(args.gpu))
+    #args.rank = args.rank * ngpus_per_node + gpu
+
+    dist.init_process_group(backend='nccl', 
+                            init_method='tcp://127.0.0.1:3456',
+                            world_size=args.world_size, 
+                            rank=gpu)
     hidden_dim=1024
     n_layer=12
     dropout=0.3
     n_heads=8
     intermediate_dim=hidden_dim*4
 
+    batch_size = args.batch_size
+    num_worker = 4 * ngpus_per_node
+
+    batch_size = int(batch_size / ngpus_per_node)
+    num_worker = int(num_worker / ngpus_per_node)
 
     if args.task == 'MNS':
         n_class=9
@@ -202,7 +208,7 @@ if __name__ == '__main__' :
                           device=device) #hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class
 
         path = r'./dataset/data.pkl'
-        train_dataloader, valid_dataloader, test_dataloader = get_data_loader(path, args.task, args.multigpu, batch_size=args.batch_size, num_workers=0, pin_memory=False)
+        train_dataloader, valid_dataloader, test_dataloader = get_data_loader(path, args, batch_size=batch_size, num_workers=num_worker, pin_memory=True)
         loss_function = torch.nn.NLLLoss()
 
     else:
@@ -214,12 +220,12 @@ if __name__ == '__main__' :
                           device=device) #hidden_dim, n_layer, dropout, n_heads, intermediate_dim, n_class
 
         path = r'./dataset/data2.pkl'
-        train_dataloader, valid_dataloader, test_dataloader = get_data_loader(path, args.task, args.multigpu, batch_size=args.batch_size, num_workers=0, pin_memory=False)
+        train_dataloader, valid_dataloader, test_dataloader = get_data_loader(path, args, batch_size=batch_size, num_workers=num_worker, pin_memory=True)
         loss_function = torch.nn.BCELoss()
+
     model = model.to(device)
 
-    if args.multigpu:
-        model = nn.parallel.DistributedDataParallel(model)
+    model = DDP(model, device_ids=[args.gpu], find_unused_parameters=True)
 
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr,
@@ -228,6 +234,7 @@ if __name__ == '__main__' :
 
     best_loss, best_label, best_pred, best_mask = None, None, None, None
 
+    n_epochs = args.epochs
     for e in tqdm(range(n_epochs)):
         start_time = time.time()
         if args.task =='MNS':
@@ -242,13 +249,43 @@ if __name__ == '__main__' :
             test_loss, test_acc, test_label, test_pred, test_fscore, epoch= train_or_eval_model2(model, loss_function, test_dataloader, e, device)
 
         if best_loss == None or best_loss > test_loss:
-            best_loss, best_label, best_pred =\
-                    test_loss, test_label, test_pred
+            best_train_loss, best_train_acc, best_train_fscore, best_valid_loss, best_valid_acc, best_val_fscore,\
+                        best_test_loss, best_test_acc, best_test_fscore\
+                        =train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore, test_loss, test_acc, test_fscore
 
             #path = './weights/' + args.task + '/model_' + str(epoch) + '.pt'
             path = './weights/' + args.task + '_model.pt'
             torch.save(model.state_dict(), path)
-
+            best_epoch = e
+            
         print('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
                 format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore,\
                         test_loss, test_acc, test_fscore, round(time.time()-start_time,2)))
+
+    print('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {}'.\
+                format(best_epoch+1, best_train_loss, best_train_acc, best_train_fscore, best_valid_loss, best_valid_acc, best_val_fscore,\
+                        best_test_loss, best_test_acc, best_test_fscore))
+    
+if __name__ == '__main__' :
+    
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--task', default='MNS', metavar='TASK',
+                        help='training_object')
+    parser.add_argument('--multigpu', default=True, metavar='multi-gpu',
+                        help='multi-gpu')
+    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR',
+                        help='learning rate')
+    parser.add_argument('--l2', type=float, default=0.00001, metavar='L2',
+                        help='L2 regularization weight')
+    parser.add_argument('--batch-size', type=int, default=32, metavar='BS',
+                        help='batch size')
+    parser.add_argument('--epochs', type=int, default=60, metavar='E',
+                        help='number of epochs')
+    parser.add_argument('--class-weight', action='store_true', default=True,
+                        help='class weight')
+    parser.add_argument("--local_rank", type=int, default=0)
+
+
+    args = parser.parse_args()
+    main(args)

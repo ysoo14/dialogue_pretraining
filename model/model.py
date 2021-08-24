@@ -44,6 +44,7 @@ class Model_MNS(nn.Module): #matching the number of speakers
         return result
 
     def forward(self, utterances, umask): #utterance (seq_len, batch_size, dim)
+        utterances = utterances.squeeze(2)
         utterances = self.add_token(utterances)
         utterances = utterances.permute(1,0,2)
         outputs = self.dialogue_encoder(input_embeds=utterances, umask=umask)
@@ -75,20 +76,20 @@ class Model_SCP(nn.Module):
         self.device = device
 
     def add_token(self, contexts, utt1, utt2):
-        contexts = contexts.squeeze(2)
         batch_size = contexts.shape[1]
         cls_t = self.token_embedding(self.cls_token)
         cls_t = cls_t.repeat(1, batch_size, 1)
         sep_t = self.token_embedding(self.sep_token)
         sep_t = sep_t.repeat(1, batch_size, 1)
-
+ 
         result = torch.cat((cls_t, contexts, sep_t, utt1, sep_t, utt2, sep_t), dim=0)
-
+      
         result = result.to(self.device)
 
         return result
 
     def forward(self, contexts, utt1, utt2, umask): #utterance (seq_len, batch_size, dim)
+        contexts = contexts.squeeze(2)
         utterances = self.add_token(contexts, utt1, utt2)
         utterances = utterances.permute(1,0,2)
         outputs = self.dialogue_encoder(input_embeds=utterances, umask=umask)

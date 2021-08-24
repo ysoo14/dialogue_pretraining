@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
-import pickle
+import pickle5 as pickle
 import pandas as pd
 
 class Dataset_MNS(Dataset):
@@ -15,15 +15,12 @@ class Dataset_MNS(Dataset):
         self.speakers = self.dataset['speakers']
         self.num_utterances = self.dataset['num_utterances']
         self.num_speakers = self.dataset['num_speakers']
-
         self.len = len(self.ids)
 
     def __getitem__(self, index):        
-        encoded_utterances = self.encoded_utterances[index]
         num_speaker = []
-        utterances = torch.cat([utterance for utterance in encoded_utterances], dim=0)
         num_speaker.append(self.num_speakers[index])
-        return utterances,\
+        return torch.FloatTensor(self.encoded_utterances[index]),\
                torch.FloatTensor(self.speakers[index]),\
                torch.LongTensor(num_speaker),\
                torch.FloatTensor([1]*(self.num_utterances[index]+2)),\
