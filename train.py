@@ -1,4 +1,5 @@
 import argparse
+import logging
 import numpy as np, pickle, time, argparse
 import pickle5 as pickle
 import time
@@ -247,7 +248,17 @@ def main_worker(gpu, ngpus_per_node, args, device):
                                                 train_dataloader, e, device, optimizer, True)
             valid_loss, valid_acc, _,_,val_fscore, _= train_or_eval_model2(model, loss_function, valid_dataloader, e, device)
             test_loss, test_acc, test_label, test_pred, test_fscore, epoch= train_or_eval_model2(model, loss_function, test_dataloader, e, device)
+        
 
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+
+        log_path = './logs/' + args.task +'_output.log'
+        file_handler = logging.FileHandler(log_path)
+        logger.addHandler(file_handler)
+        logger.debug('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
+            format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore,\
+                    test_loss, test_acc, test_fscore, round(time.time()-start_time,2)))
         if best_loss == None or best_loss > test_loss:
             best_train_loss, best_train_acc, best_train_fscore, best_valid_loss, best_valid_acc, best_val_fscore,\
                         best_test_loss, best_test_acc, best_test_fscore\
@@ -257,10 +268,6 @@ def main_worker(gpu, ngpus_per_node, args, device):
             path = './weights/' + args.task + '_model.pt'
             torch.save(model.state_dict(), path)
             best_epoch = e
-            
-        print('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
-                format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore,\
-                        test_loss, test_acc, test_fscore, round(time.time()-start_time,2)))
 
     print('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {}'.\
                 format(best_epoch+1, best_train_loss, best_train_acc, best_train_fscore, best_valid_loss, best_valid_acc, best_val_fscore,\
