@@ -71,7 +71,10 @@ class Model_SCP(nn.Module):
         self.sep_token = torch.LongTensor([1]).to(device)
         self.token_embedding = nn.Embedding(2, hidden_dim)
         self.dialogue_encoder = DialogueEncoder(bert_config=self.bert_config)
-        self.classifier=nn.Linear(hidden_dim, 1)
+        self.fc1=nn.Linear(hidden_dim, int(hidden_dim/2))
+        self.fc2=nn.Linear(int(hidden_dim/2), 100)
+        self.fc3=nn.Linear(100, 1)
+
         self.sigmoid = nn.Sigmoid()
         self.device = device
 
@@ -87,16 +90,35 @@ class Model_SCP(nn.Module):
         result = result.to(self.device)
 
         return result
+    def extending_umask(self, umask):
+        batch_size = umask.shape[0]
+
+        s_token_mask = torch.ones(batch_size, 1)
+        h_token_mask = torch.ones(batch_size, 5)
+
+        s_token_mask = s_token_mask.to(self.device)
+        h_token_mask = h_token_mask.to(self.device)
+
+        extended_umask = torch.cat((s_token_mask, umask, h_token_mask), dim=1)
+
+        return extended_umask
 
     def forward(self, contexts, utt1, utt2, umask): #utterance (seq_len, batch_size, dim)
         contexts = contexts.squeeze(2)
         utterances = self.add_token(contexts, utt1, utt2)
         utterances = utterances.permute(1,0,2)
+        umask = umask.permute(1, 0)
+        umask = self.extending_umask(umask)
+
         outputs = self.dialogue_encoder(input_embeds=utterances, umask=umask)
 
         s_token = outputs[1]
         
-        linear_output = self.classifier(s_token)
-        output = self.sigmoid(linear_output)
+        linear_output1 = self.fc1(s_token)
+        linear_output2 = self.fc2(linear_output1)
+        linear_output3 = self.fc3(linear_output2)
+
+        output = self.sigmoid(linear_output3)
         output = output.squeeze(1)
+
         return output

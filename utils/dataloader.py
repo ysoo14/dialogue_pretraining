@@ -52,7 +52,7 @@ class Dataset_SCP(Dataset):
         return torch.FloatTensor(self.contexts[index]),\
                torch.FloatTensor(self.utterance1[index]),\
                torch.FloatTensor(self.utterance2[index]),\
-               torch.FloatTensor([1]*(len(self.contexts[index])+6)),\
+               torch.FloatTensor([1]*(len(self.contexts[index]))),\
                torch.FloatTensor(label),\
                index        
 
