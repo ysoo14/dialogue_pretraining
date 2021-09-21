@@ -2,6 +2,7 @@ import argparse
 import logging
 import numpy as np, pickle, time, argparse
 import pickle5 as pickle
+import random
 import time
 
 import torch
@@ -23,7 +24,13 @@ from tqdm.auto import tqdm
 from tqdm import trange
 from utils.dataloader import Dataset_SCP, Dataset_MNS
 
-np.random.seed(1234)
+logger = logging.getLogger()
+
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed) 
 
 def get_data_loader(path, args, batch_size=16, num_workers=0, pin_memory=False):
     if args.task == 'MNS':
@@ -114,7 +121,7 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, device, optimiz
 
     avg_loss = round(np.sum(losses),4)
     avg_accuracy = round(accuracy_score(labels,preds)*100,2)
-    avg_fscore = round(f1_score(labels,preds,average='weighted')*100,2)
+    avg_fscore = round(f1_score(labels,preds)*100,2)
     return avg_loss, avg_accuracy, labels, preds, avg_fscore, epoch 
 
 def train_or_eval_model2(model, loss_function, dataloader, epoch, device, optimizer=None, train=False):
@@ -126,6 +133,8 @@ def train_or_eval_model2(model, loss_function, dataloader, epoch, device, optimi
         model.train()
     else:
         model.eval()
+
+    total_loss = 0
     for data in tqdm(dataloader, position=0, leave=True):
         if train:
             optimizer.zero_grad()
@@ -137,13 +146,15 @@ def train_or_eval_model2(model, loss_function, dataloader, epoch, device, optimi
         umasks = umasks.to(device)
         log_prob = model(contexts, utt1s, utt2s, umasks) # seq_len, batch, n_classes
         label = label.view(-1)
+
         loss = loss_function(log_prob, label)
 
         pred_ = torch.round(log_prob) # batch*seq_len
         preds.append(pred_.data.cpu().numpy())
         labels.append(label.data.cpu().numpy())
 
-        losses.append(loss.item())
+        total_loss = total_loss + loss.item()
+
         if train:
             loss.backward()
             optimizer.step()
@@ -159,7 +170,7 @@ def train_or_eval_model2(model, loss_function, dataloader, epoch, device, optimi
     else:
         return float('nan'), float('nan'), [], [], [], float('nan'),[]
 
-    avg_loss = round(np.sum(losses),4)
+    avg_loss = round(total_loss / len(dataloader),4)
     avg_accuracy = round(accuracy_score(labels,preds)*100,2)
     avg_fscore = round(f1_score(labels,preds,average='weighted')*100,2)
     return avg_loss, avg_accuracy, labels, preds, avg_fscore, epoch 
@@ -175,15 +186,13 @@ def main(args):
         print('Running on CPU')
         device = torch.device("cpu")
 
-    logger = logging.getLogger()
-
     ngpus_per_node = torch.cuda.device_count()
     args.world_size = ngpus_per_node * args.node
     mp.spawn(main_worker, nprocs=ngpus_per_node, 
-             args=(ngpus_per_node, args, device, logger))
+             args=(ngpus_per_node, args, device))
     
     
-def main_worker(gpu, ngpus_per_node, args, device, logger):
+def main_worker(gpu, ngpus_per_node, args, device):
     args.gpu = gpu
     args.rank = gpu
     torch.cuda.set_device(args.gpu)
@@ -195,10 +204,11 @@ def main_worker(gpu, ngpus_per_node, args, device, logger):
                             init_method='tcp://127.0.0.1:3456',
                             world_size=args.world_size, 
                             rank=gpu)
-    hidden_dim=768
-    n_layer=12
-    dropout=0.3
-    n_heads=12
+    input_dim=768
+    hidden_dim=256
+    n_layer=6
+    dropout=0.2
+    n_heads=2
     intermediate_dim=hidden_dim*4
 
     batch_size = args.batch_size
@@ -221,7 +231,7 @@ def main_worker(gpu, ngpus_per_node, args, device, logger):
 
     else:
         n_class=2
-        model = Model_SCP(hidden_dim=hidden_dim, n_layer=n_layer, 
+        model = Model_SCP(input_dim =input_dim, hidden_dim=hidden_dim, n_layer=n_layer, 
                           dropout=dropout, n_heads=n_heads, 
                           intermediate_dim=intermediate_dim, 
                           n_class=n_class,
@@ -261,20 +271,16 @@ def main_worker(gpu, ngpus_per_node, args, device, logger):
             log_path = './logs/' + args.task +'_output.log'
             file_handler = logging.FileHandler(log_path)
             logger.addHandler(file_handler)
-            logger.debug('epoch {} train_loss {} train_acc {} train_fscore{} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
+            logger.debug('epoch {} train_loss {} train_acc {} train_fscore {} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
                 format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore,\
                         test_loss, test_acc, test_fscore, round(time.time()-start_time,2)))
 
-            if best_loss == None or best_loss > test_loss:
-                best_loss = test_loss
-
-                #path = './weights/' + args.task + '/model_' + str(epoch) + '.pt'
-                path = './weights/' + args.task + '_model.pt'
-                torch.save(model.state_dict(), path)
-                best_epoch = e
-
-    logger.debug(best_epoch)
     
+            path = './weights/' + args.task + '_model_' + str(epoch) + '.pt'
+            #path = './weights/' + args.task + '_model.pt'
+            torch.save(model.state_dict(), path)
+    
+    dist.destroy_process_group()
 if __name__ == '__main__' :
     
     parser = argparse.ArgumentParser()
@@ -294,7 +300,10 @@ if __name__ == '__main__' :
     parser.add_argument('--class-weight', action='store_true', default=True,
                         help='class weight')
     parser.add_argument("--local_rank", type=int, default=0)
-
+    parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
+
+    set_seed(args)
+
     main(args)
