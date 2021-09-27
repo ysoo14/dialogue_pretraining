@@ -63,3 +63,30 @@ class Dataset_SCP(Dataset):
         dat = pd.DataFrame(data)
 
         return [pad_sequence(dat[i]) if i<5 else dat[i] for i in dat]
+
+class Dataset_SAE(Dataset):
+    def __init__(self, path):
+        self.dataset= pickle.load(open(path, 'rb'), encoding='latin1') 
+
+        self.utts = self.dataset['utterances']
+        self.utterance_masks = self.dataset['utterance_masks']
+        self.dialogue_masks = self.dataset['dialogue_masks']
+        self.labels = self.dataset['labels']
+        self.label_masks = self.dataset['label_masks']
+        self.speakers = self.dataset['masked_speakers']
+        self.label_speakers = self.dataset['dialogue_speakers']
+        
+        self.len = len(self.speakers)
+
+    def __getitem__(self, index):
+        return torch.LongTensor(self.utts[index]),\
+            torch.FloatTensor(self.utterance_masks[index]),\
+            torch.FloatTensor(self.dialogue_masks[index]),\
+            torch.LongTensor(self.labels[index]),\
+            torch.FloatTensor(self.label_masks[index]),\
+            torch.LongTensor(self.speakers[index]),\
+            torch.FloatTensor(self.label_speakers[index]),\
+            index        
+
+    def __len__(self):
+        return self.len

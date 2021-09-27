@@ -1,8 +1,14 @@
 import torch
 import torch.nn as nn
+from torch.nn  import CrossEntropyLoss, MSELoss, NLLLoss
+
 import torch.nn.functional as F
+
 from torch.nn.utils.rnn import pad_sequence
-from transformers import BertModel, BertConfig
+from transformers import BertModel, BertConfig, BertTokenizer, BertForPreTraining, BertLMHeadModel
+from transformers.models.bert.modeling_bert import BertPredictionHeadTransform
+
+from copy import deepcopy
 
 class DialogueEncoder(nn.Module):
     def __init__(self, bert_config):
@@ -21,8 +27,8 @@ class Model_MNS(nn.Module): #matching the number of speakers
                                       hidden_dropout_prob=dropout,
                                       intermediate_size=intermediate_dim,
                                       max_position_embeddings=512)
-        self.cls_token = torch.LongTensor([0]).to(device)
-        self.sep_token = torch.LongTensor([1]).to(device)
+        self.cls_token = torch.LongTensor([0]).cuda(device)
+        self.sep_token = torch.LongTensor([1]).cuda(device)
         self.token_embedding = nn.Embedding(2, hidden_dim)
         self.dialogue_encoder = DialogueEncoder(bert_config=self.bert_config)
         self.classifier=nn.Linear(hidden_dim, n_class)
@@ -39,7 +45,7 @@ class Model_MNS(nn.Module): #matching the number of speakers
 
         result = torch.cat((cls_t, utterances, sep_t), dim=0)
 
-        result = result.to(self.device)
+        result = result.cuda(self.device)
 
         return result
 
@@ -68,8 +74,8 @@ class Model_SCP(nn.Module):
                                       hidden_dropout_prob=dropout,
                                       intermediate_size=intermediate_dim)
         self.input_layer = nn.Linear(input_dim, hidden_dim)
-        self.cls_token = torch.LongTensor([0]).to(device)
-        self.sep_token = torch.LongTensor([1]).to(device)
+        self.cls_token = torch.LongTensor([0]).cuda(device)
+        self.sep_token = torch.LongTensor([1]).cuda(device)
         self.token_embedding = nn.Embedding(2, hidden_dim)
         self.dialogue_encoder = DialogueEncoder(bert_config=self.bert_config)
         self.fc1=nn.Linear(hidden_dim, int(hidden_dim/2))
@@ -97,8 +103,8 @@ class Model_SCP(nn.Module):
         s_token_mask = torch.ones(batch_size, 1)
         h_token_mask = torch.ones(batch_size, 5)
 
-        s_token_mask = s_token_mask.to(self.device)
-        h_token_mask = h_token_mask.to(self.device)
+        s_token_mask = s_token_mask.cuda(self.device)
+        h_token_mask = h_token_mask.cuda(self.device)
 
         extended_umask = torch.cat((s_token_mask, umask, h_token_mask), dim=1)
 
@@ -112,8 +118,8 @@ class Model_SCP(nn.Module):
         utt1 = self.input_layer(utt1)
         utt2 = self.input_layer(utt2)
 
-        #utterances = self.add_token(n_contexts, utt1, utt2)
-        utterances = torch.cat((utt1, utt2), dim=1)
+        utterances = self.add_token(n_contexts, utt1, utt2)
+        #utterances = torch.cat((utt1, utt2), dim=1)
         utterances = utterances.permute(1,0,2)
         umask = umask.permute(1, 0)
         umask = self.extending_umask(umask)
@@ -128,5 +134,66 @@ class Model_SCP(nn.Module):
 
         output = self.sigmoid(linear_output2)
         output = output.squeeze(1)
-
         return output
+
+class Model_SAE(nn.Module): #speaker autoencoder
+    def __init__(self, device, vocab_size=30522, hidden_size=512, num_hidden_layers=8, num_attention_heads=4, intermediate_dim=2048):
+        super(Model_SAE, self).__init__()
+
+        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.bert_config = BertConfig(vocab_size=vocab_size, hidden_size=hidden_size, num_hidden_layers=num_hidden_layers,
+                                         num_attention_heads=num_attention_heads, intermediate_dim=intermediate_dim)
+        self.utt_encoder = BertModel(self.bert_config)
+        self.speaker_embedding = nn.Embedding(3, hidden_size)
+        self.context_encoder = DialogueEncoder(self.bert_config)
+        self.context_mlm_trans = BertPredictionHeadTransform(self.bert_config)
+        self.dropout = nn.Dropout(self.bert_config.hidden_dropout_prob)
+        self.linear = nn.Linear(hidden_size, 1)
+        self.sigmoid = nn.Sigmoid()
+        self.device = device
+        # self.decoder_config = deepcopy(self.bert_config)
+        # self.decoder_config.is_decoder=True
+        # self.decoder_config.add_cross_attention=True
+        # self.decoder = BertLMHeadModel(self.decoder_config)
+    
+    def utt_encoding(self, utts, utt_masks):
+        batch_size, max_ctx_len, max_utt_len = utts.size() #context: [batch_size x diag_len x max_utt_len]
+        utts = utts.view(-1, max_utt_len) # [(batch_size*diag_len) x max_utt_len]
+        utt_masks = utt_masks.view(-1, max_utt_len)
+        outputs = self.utt_encoder(utts, utt_masks)
+        utts_encodings = outputs[1]
+        utts_encodings = utts_encodings.view(batch_size, max_ctx_len, -1)  
+
+        return utts_encodings
+    
+    def context_encoding(self, utts, utts_masks, dialogue_masks, masked_speakers):
+        encoded_speaker = self.speaker_embedding(masked_speakers)
+        utt_encodings = self.utt_encoding(utts, utts_masks)
+
+        final_encodings = utt_encodings + encoded_speaker
+
+        outputs = self.context_encoder(final_encodings, dialogue_masks)
+
+        context_hiddens = outputs[0]
+        pooled_output = outputs[1]
+
+        return context_hiddens, pooled_output
+
+    def forward(self, utts, utt_masks, dialogue_masks, masked_speakers, labels, label_speakers, label_masks): #dialogues (batch, length, size)
+        context_hiddens, _ = self.context_encoding(utts, utt_masks, dialogue_masks, masked_speakers)
+        predict_encodings = self.context_mlm_trans(self.dropout(context_hiddens))
+
+        with torch.no_grad():
+            label_encodings = self.utt_encoding(labels, label_masks)
+
+        loss_mlm = MSELoss()(predict_encodings, label_encodings) # [num_selected_utts x dim]
+
+        predict_encodings = self.linear(predict_encodings)
+
+        predict_speakers = self.sigmoid(predict_encodings).squeeze(2)
+
+        loss_speakers = torch.nn.BCELoss()(predict_speakers, label_speakers)
+
+        final_loss = loss_mlm + loss_speakers
+
+        return final_loss, loss_mlm, loss_speakers
