@@ -137,9 +137,10 @@ class Model_SCP(nn.Module):
         return output
 
 class Model_SAE(nn.Module): #speaker autoencoder
-    def __init__(self, device, vocab_size=30522, hidden_size=512, num_hidden_layers=8, num_attention_heads=4, intermediate_dim=2048):
+    def __init__(self, device, vocab_size=30522, hidden_size=768, num_hidden_layers=12, num_attention_heads=12, intermediate_dim=3072):
         super(Model_SAE, self).__init__()
 
+        self.utt_pretrained_encoder = BertModel.from_pretrained('bert-base-uncased')
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
         self.bert_config = BertConfig(vocab_size=vocab_size, hidden_size=hidden_size, num_hidden_layers=num_hidden_layers,
                                          num_attention_heads=num_attention_heads, intermediate_dim=intermediate_dim)
@@ -148,6 +149,7 @@ class Model_SAE(nn.Module): #speaker autoencoder
         self.context_encoder = DialogueEncoder(self.bert_config)
         self.context_mlm_trans = BertPredictionHeadTransform(self.bert_config)
         self.dropout = nn.Dropout(self.bert_config.hidden_dropout_prob)
+        self.append_linear = nn.Linear(hidden_size*2, hidden_size)
         self.linear = nn.Linear(hidden_size, 1)
         self.sigmoid = nn.Sigmoid()
         self.device = device
@@ -156,21 +158,27 @@ class Model_SAE(nn.Module): #speaker autoencoder
         # self.decoder_config.add_cross_attention=True
         # self.decoder = BertLMHeadModel(self.decoder_config)
     
-    def utt_encoding(self, utts, utt_masks):
-        batch_size, max_ctx_len, max_utt_len = utts.size() #context: [batch_size x diag_len x max_utt_len]
-        utts = utts.view(-1, max_utt_len) # [(batch_size*diag_len) x max_utt_len]
+    def utt_encoding(self, utts, utt_masks, pretrained=True):
+        batch_size, max_ctx_len, max_utt_len = utts.size()
+        utts = utts.view(-1, max_utt_len)
         utt_masks = utt_masks.view(-1, max_utt_len)
-        outputs = self.utt_encoder(utts, utt_masks)
+        if pretrained == True:
+            outputs = self.utt_pretrained_encoder(utts, utt_masks)
+        else:
+            outputs = self.utt_encoder(utts, utt_masks)
         utts_encodings = outputs[1]
-        utts_encodings = utts_encodings.view(batch_size, max_ctx_len, -1)  
-
+        utts_encodings = utts_encodings.view(batch_size, max_ctx_len, -1)
         return utts_encodings
-    
-    def context_encoding(self, utts, utts_masks, dialogue_masks, masked_speakers):
+
+    def context_encoding(self, utts, utts_masks, dialogue_masks, masked_speakers, mode='append'):
         encoded_speaker = self.speaker_embedding(masked_speakers)
         utt_encodings = self.utt_encoding(utts, utts_masks)
 
-        final_encodings = utt_encodings + encoded_speaker
+        if mode == 'append':
+            final_encodings = torch.cat((utt_encodings, encoded_speaker), dim=2)
+            final_encodings = self.append_linear(final_encodings)
+        else:
+            final_encodings = utt_encodings + encoded_speaker
 
         outputs = self.context_encoder(final_encodings, dialogue_masks)
 
@@ -179,12 +187,22 @@ class Model_SAE(nn.Module): #speaker autoencoder
 
         return context_hiddens, pooled_output
 
-    def forward(self, utts, utt_masks, dialogue_masks, masked_speakers, labels, label_speakers, label_masks): #dialogues (batch, length, size)
+    def forward(self, utts, utt_masks, dialogue_masks, masked_speakers, labels, label_speakers, label_masks, mode='append'): #dialogues (batch, length, size)
+        label_speakers_long = label_speakers.type(torch.LongTensor)
+        label_speakers_long = label_speakers_long.cuda(self.device)
+
         context_hiddens, _ = self.context_encoding(utts, utt_masks, dialogue_masks, masked_speakers)
         predict_encodings = self.context_mlm_trans(self.dropout(context_hiddens))
 
         with torch.no_grad():
             label_encodings = self.utt_encoding(labels, label_masks)
+            speaker_embedded = self.speaker_embedding(label_speakers_long)
+
+            if mode == 'append':
+                label_encodings = torch.cat((label_encodings, speaker_embedded), dim=2)
+                label_encodings = self.append_linear(label_encodings)
+            else:
+                label_encodings = label_encodings + speaker_embedded
 
         loss_mlm = MSELoss()(predict_encodings, label_encodings) # [num_selected_utts x dim]
 

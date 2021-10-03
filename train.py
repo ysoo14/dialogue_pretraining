@@ -281,7 +281,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     else:
         model = Model_SAE(device=gpu)
-        path = r'./dataset/padded_dialogue300.pkl'
+        path = r'./dataset/padded_dialogue_woiemocap30.pkl'
         train_dataloader, test_dataloader = get_data_loader(path, args, batch_size=batch_size, num_workers=num_worker, pin_memory=True)
 
     torch.cuda.set_device(gpu)
@@ -328,7 +328,6 @@ def main_worker(gpu, ngpus_per_node, args):
             path = './weights/' + args.task + '_model_' + str(e+1) + '.pt'
             #path = './weights/' + args.task + '_model.pt'
             torch.save(model.state_dict(), path)
-        dist.barrier()
 
 
 if __name__ == '__main__' :
