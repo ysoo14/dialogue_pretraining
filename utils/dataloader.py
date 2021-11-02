@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
+import numpy as np
 import pickle5 as pickle
 import pandas as pd
 
@@ -75,10 +76,14 @@ class Dataset_SAE(Dataset):
         self.label_masks = self.dataset['label_masks']
         self.speakers = self.dataset['masked_speakers']
         self.label_speakers = self.dataset['dialogue_speakers']
-        
+        self.masked_index = self.dataset['masked_index']
+        self.response = self.dataset['response']
+        self.response_mask = self.dataset['response_masks']
+        self.response_speaker = self.dataset['response_speaker']
         self.len = len(self.speakers)
 
     def __getitem__(self, index):
+        sen_len = np.shape(self.utts)[1]
         return torch.LongTensor(self.utts[index]),\
             torch.FloatTensor(self.utterance_masks[index]),\
             torch.FloatTensor(self.dialogue_masks[index]),\
@@ -86,7 +91,16 @@ class Dataset_SAE(Dataset):
             torch.FloatTensor(self.label_masks[index]),\
             torch.LongTensor(self.speakers[index]),\
             torch.FloatTensor(self.label_speakers[index]),\
+            torch.LongTensor([1 if x == self.masked_index[index] else 0 for x in range(0, sen_len)]),\
+            torch.LongTensor(self.response[index]),\
+            torch.FloatTensor(self.response_mask[index]),\
+            torch.LongTensor(self.response_speaker[index]),\
             index        
 
     def __len__(self):
         return self.len
+
+    def collate_fn(self, data):
+        dat = pd.DataFrame(data)
+
+        return [pad_sequence(dat[i]) if i<11  else dat[i].tolist() for i in dat]

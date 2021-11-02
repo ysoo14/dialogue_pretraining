@@ -62,7 +62,7 @@ def get_data_loader(path, args, batch_size=16, num_workers=0, pin_memory=False):
                                   batch_size=batch_size, 
                                   shuffle=False, 
                                   sampler=train_sampler, 
-                                  #collate_fn=dataset.collate_fn,
+                                  collate_fn=dataset.collate_fn,
                                   num_workers=num_workers,
                                   pin_memory=pin_memory)
     # valid_dataloader = DataLoader(dataset=valid_dataset, 
@@ -77,7 +77,7 @@ def get_data_loader(path, args, batch_size=16, num_workers=0, pin_memory=False):
                                  batch_size=batch_size, 
                                  shuffle=False, 
                                  sampler=test_sampler, 
-                                 #collate_fn=dataset.collate_fn,
+                                 collate_fn=dataset.collate_fn,
                                  num_workers=num_workers,
                                  pin_memory=pin_memory)
 
@@ -187,11 +187,13 @@ def train_or_eval_model3(model, dataloader, epoch, device, optimizer=None, train
     total_loss = 0
     total_mlm_loss = 0
     total_speaker_loss = 0
+    total_dec_loss = 0
     epoch_iterator = tqdm(dataloader, desc="Iteration")
     for step, batch in enumerate(epoch_iterator):
         if train:
             optimizer.zero_grad()
-        utts, utterance_masks, dialogue_masks, labels, label_masks, speakers, label_speakers, _ = batch
+        utts, utterance_masks, dialogue_masks, labels, label_masks, speakers, label_speakers, masked_index, response, response_mask, response_speaker, _ = batch
+
         utts = utts.cuda(device)
         utterance_masks = utterance_masks.cuda(device)
         dialogue_masks = dialogue_masks.cuda(device)
@@ -199,12 +201,19 @@ def train_or_eval_model3(model, dataloader, epoch, device, optimizer=None, train
         label_masks = label_masks.cuda(device)
         speakers = speakers.cuda(device)
         label_speakers = label_speakers.cuda(device)
+        masked_index = masked_index.cuda(device)
+        response = response.cuda(device)
+        response_mask = response_mask.cuda(device)
+        response_speaker = response_speaker.cuda(device)
 
-        loss, loss_mlm, loss_speaker = model(utts, utterance_masks, dialogue_masks, speakers, labels, label_speakers, label_masks) # seq_len, batch, n_classes
+        loss, loss_mlm, loss_speaker, loss_decoder = model(utts, utterance_masks, dialogue_masks, speakers, labels, 
+                                            label_speakers, label_masks, masked_index, response, 
+                                            response_mask, response_speaker) # seq_len, batch, n_classes
 
         total_loss = total_loss + loss.item()
         total_mlm_loss = total_mlm_loss + loss_mlm.item()
         total_speaker_loss = total_speaker_loss + loss_speaker.item() 
+        total_dec_loss = total_dec_loss + loss_decoder.item()
         if train:
             loss.backward()
             optimizer.step()
@@ -212,8 +221,8 @@ def train_or_eval_model3(model, dataloader, epoch, device, optimizer=None, train
     avg_loss = round(total_loss / len(dataloader),4)
     avg_loss_mlm = round(total_mlm_loss / len(dataloader),4)
     avg_loss_speaker = round(total_speaker_loss / len(dataloader),4)
-
-    return avg_loss, avg_loss_mlm, avg_loss_speaker
+    avg_loss_dec = round(total_dec_loss / len(dataloader),4)
+    return avg_loss, avg_loss_mlm, avg_loss_speaker, avg_loss_dec
 
 def main(args):
     args.node = 1
@@ -281,7 +290,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     else:
         model = Model_SAE(device=gpu)
-        path = r'./dataset/padded_dialogue_woiemocap30.pkl'
+        path = r'./dataset/padded_dialogue_30generation_2speaker.pkl'
         train_dataloader, test_dataloader = get_data_loader(path, args, batch_size=batch_size, num_workers=num_worker, pin_memory=True)
 
     torch.cuda.set_device(gpu)
@@ -309,8 +318,8 @@ def main_worker(gpu, ngpus_per_node, args):
             valid_loss, valid_acc, _,_,val_fscore, _= train_or_eval_model2(model, loss_function, valid_dataloader, e, device)
             test_loss, test_acc, test_label, test_pred, test_fscore, epoch= train_or_eval_model2(model, loss_function, test_dataloader, e, device)
         else:
-            train_loss, train_mlm_loss, train_speaker_loss = train_or_eval_model3(model, train_dataloader, e, gpu, optimizer, True)
-            test_loss, test_mlm_loss, test_speaker_loss = train_or_eval_model3(model, test_dataloader, e, gpu)
+            train_loss, train_mlm_loss, train_speaker_loss, train_dec_loss = train_or_eval_model3(model, train_dataloader, e, gpu, optimizer, True)
+            test_loss, test_mlm_loss, test_speaker_loss, test_dec_loss = train_or_eval_model3(model, test_dataloader, e, gpu)
         
         if gpu == 0:
             logger.setLevel(logging.DEBUG)
@@ -321,13 +330,14 @@ def main_worker(gpu, ngpus_per_node, args):
             #     format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore,\
             #             test_loss, test_acc, test_fscore, round(time.time()-start_time,2)))
             if args.task == 'SAE':
-                logger.debug('epoch {} train_loss {} train_mlm_loss {} train_speaker_loss {} test_loss {} train_mlm_loss {} train_speaker_loss {} time {}'.\
-                    format(e+1, train_loss, train_mlm_loss, train_speaker_loss, test_loss, test_mlm_loss, test_speaker_loss, round(time.time()-start_time,2)))
+                logger.debug('epoch {} train_loss {} train_mlm_loss {} train_speaker_loss {} train_dec_loss {} test_loss {} test_mlm_loss {} test_speaker_loss {} test_dec_loss {} time {}'.\
+                    format(e+1, train_loss, train_mlm_loss, train_speaker_loss, train_dec_loss, test_loss, test_mlm_loss, test_speaker_loss, test_dec_loss, round(time.time()-start_time,2)))
 
     
             path = './weights/' + args.task + '_model_' + str(e+1) + '.pt'
             #path = './weights/' + args.task + '_model.pt'
             torch.save(model.state_dict(), path)
+        dist.barrier()
 
 
 if __name__ == '__main__' :
