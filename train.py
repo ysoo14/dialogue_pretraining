@@ -206,23 +206,27 @@ def train_or_eval_model3(model, dataloader, epoch, device, optimizer=None, train
         response_mask = response_mask.cuda(device)
         response_speaker = response_speaker.cuda(device)
 
-        loss, loss_mlm, loss_speaker, loss_decoder = model(utts, utterance_masks, dialogue_masks, speakers, labels, 
+        # loss, loss_mlm, loss_speaker, loss_decoder = model(utts, utterance_masks, dialogue_masks, speakers, labels, 
+        #                                     label_speakers, label_masks, masked_index, response, 
+        #                                     response_mask, response_speaker) # seq_len, batch, n_classes
+        
+        loss = model(utts, utterance_masks, dialogue_masks, speakers, labels, 
                                             label_speakers, label_masks, masked_index, response, 
                                             response_mask, response_speaker) # seq_len, batch, n_classes
 
         total_loss = total_loss + loss.item()
-        total_mlm_loss = total_mlm_loss + loss_mlm.item()
-        total_speaker_loss = total_speaker_loss + loss_speaker.item() 
-        total_dec_loss = total_dec_loss + loss_decoder.item()
+        #total_mlm_loss = total_mlm_loss + loss_mlm.item()
+        #total_speaker_loss = total_speaker_loss + loss_speaker.item() 
+        #total_dec_loss = total_dec_loss + loss_decoder.item()
         if train:
             loss.backward()
             optimizer.step()
 
     avg_loss = round(total_loss / len(dataloader),4)
-    avg_loss_mlm = round(total_mlm_loss / len(dataloader),4)
-    avg_loss_speaker = round(total_speaker_loss / len(dataloader),4)
-    avg_loss_dec = round(total_dec_loss / len(dataloader),4)
-    return avg_loss, avg_loss_mlm, avg_loss_speaker, avg_loss_dec
+    #avg_loss_mlm = round(total_mlm_loss / len(dataloader),4)
+    #avg_loss_speaker = round(total_speaker_loss / len(dataloader),4)
+    #avg_loss_dec = round(total_dec_loss / len(dataloader),4)
+    return avg_loss#, avg_loss_mlm, avg_loss_dec
 
 def main(args):
     args.node = 1
@@ -318,8 +322,10 @@ def main_worker(gpu, ngpus_per_node, args):
             valid_loss, valid_acc, _,_,val_fscore, _= train_or_eval_model2(model, loss_function, valid_dataloader, e, device)
             test_loss, test_acc, test_label, test_pred, test_fscore, epoch= train_or_eval_model2(model, loss_function, test_dataloader, e, device)
         else:
-            train_loss, train_mlm_loss, train_speaker_loss, train_dec_loss = train_or_eval_model3(model, train_dataloader, e, gpu, optimizer, True)
-            test_loss, test_mlm_loss, test_speaker_loss, test_dec_loss = train_or_eval_model3(model, test_dataloader, e, gpu)
+            # train_loss, train_mlm_loss, train_speaker_loss, train_dec_loss = train_or_eval_model3(model, train_dataloader, e, gpu, optimizer, True)
+            # test_loss, test_mlm_loss, test_speaker_loss, test_dec_loss = train_or_eval_model3(model, test_dataloader, e, gpu)
+            train_loss = train_or_eval_model3(model, train_dataloader, e, gpu, optimizer, True)
+            test_loss = train_or_eval_model3(model, test_dataloader, e, gpu)
         
         if gpu == 0:
             logger.setLevel(logging.DEBUG)
@@ -329,9 +335,12 @@ def main_worker(gpu, ngpus_per_node, args):
             # logger.debug('epoch {} train_loss {} train_acc {} train_fscore {} valid_loss {} valid_acc {} val_fscore{} test_loss {} test_acc {} test_fscore {} time {}'.\
             #     format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, val_fscore,\
             #             test_loss, test_acc, test_fscore, round(time.time()-start_time,2)))
+            # if args.task == 'SAE':
+            #     logger.debug('epoch {} train_loss {} train_mlm_loss {} train_speaker_loss {} train_dec_loss {} test_loss {} test_mlm_loss {} test_speaker_loss {} test_dec_loss {} time {}'.\
+            #         format(e+1, train_loss, train_mlm_loss, train_speaker_loss, train_dec_loss, test_loss, test_mlm_loss, test_speaker_loss, test_dec_loss, round(time.time()-start_time,2)))
             if args.task == 'SAE':
-                logger.debug('epoch {} train_loss {} train_mlm_loss {} train_speaker_loss {} train_dec_loss {} test_loss {} test_mlm_loss {} test_speaker_loss {} test_dec_loss {} time {}'.\
-                    format(e+1, train_loss, train_mlm_loss, train_speaker_loss, train_dec_loss, test_loss, test_mlm_loss, test_speaker_loss, test_dec_loss, round(time.time()-start_time,2)))
+                logger.debug('epoch {} train_loss {}  test_loss {}  time {}'.\
+                    format(e+1, train_loss, test_loss, round(time.time()-start_time,2)))
 
     
             path = './weights/' + args.task + '_model_' + str(e+1) + '.pt'
